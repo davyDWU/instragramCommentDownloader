@@ -2,56 +2,108 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Screenshot Block Detector & Downloader</title>
+<title>Mobile-Friendly Screenshot Block Detector</title>
 <style>
   body {
     font-family: Arial, sans-serif;
     margin: 10px;
+    padding: 0;
   }
 
+  h2 {
+    font-size: 18px;
+  }
+
+  /* Controls container */
   .controls {
-    margin-top: 10px;
+    margin-bottom: 10px;
   }
 
-  /* Container holds image + overlay */
+  /* Make labels and sliders bigger for touch */
+  label {
+    display: block;
+    font-size: 16px;
+    margin-bottom: 5px;
+  }
+
+  input[type="range"] {
+    width: 100%;
+    margin-bottom: 15px;
+    height: 25px; /* bigger slider for touch */
+  }
+
+  input[type="file"] {
+    font-size: 16px;
+    margin-bottom: 15px;
+  }
+
+  /* Image + overlay container */
   #container {
     position: relative;
-    /* display: inline-block;      natural size */
-    float: right;               /* move to right */
+    /* display: inline-block; */
+    float: right;          /* image visually on right */
+    max-width: 100%;       /* responsive for mobile */
     margin-left: 10px;
-    max-width: 100%;            /* ensures it doesn’t overflow mobile */
   }
 
-  /* Image scales visually, but canvas coordinates stay correct */
+  /* Image scaling for mobile */
   #image {
     display: block;
-    width: 100%;                /* fill container responsively */
+    width: 100%;   /* scale to fit container */
     height: auto;
   }
 
-  /* Overlay stays on top */
+  /* Canvas overlay matches image size */
   #overlay {
     position: absolute;
     top: 0;
     left: 0;
+    width: 100%;    /* visually match image */
+    height: 100%;
     cursor: pointer;
     pointer-events: auto;
-    width: 100%;                /* match image visually */
-    height: 100%;
+  }
+
+  /* Debug info */
+  #debug {
+    white-space: pre-wrap;
+    background: #111;
+    color: #0f0;
+    padding: 10px;
+    font-size: 14px;
+    max-height: 200px;
+    overflow-y: auto;
+    margin-top: 10px;
+  }
+
+  /* Make everything fit vertically on small screens */
+  @media (max-width: 600px) {
+    body {
+      display: block;
+    }
+    #container {
+      float: none;
+      margin-left: 0;
+      margin-top: 10px;
+      width: 100%;
+    }
   }
 </style>
 </head>
 <body>
 
-<h2>Screenshot Block Detector & Downloader</h2>
+<h2>Mobile-Friendly Screenshot Block Detector</h2>
 
-<input type="file" id="upload" accept="image/*">
-<div class="controls" id="sliders"></div>
+<div class="controls">
+  <input type="file" id="upload" accept="image/*">
+  <div id="sliders"></div>
+</div>
 
 <div id="container">
   <img id="image">
   <canvas id="overlay"></canvas>
 </div>
+
 <pre id="debug"></pre>
 
 <script>
@@ -70,20 +122,17 @@ let currentBlocks = [];
 // ---------- SLIDERS ----------
 function createSlider(label, min, max, value, step, key) {
   const wrapper = document.createElement("div");
-  wrapper.style.marginTop = "5px";
   const text = document.createElement("label");
-  text.innerText = label + ": ";
+  text.innerText = label + ": " + value;
   const slider = document.createElement("input");
   slider.type = "range"; slider.min = min; slider.max = max; slider.value = value; slider.step = step;
-  const val = document.createElement("span");
-  val.innerText = value;
-  slider.oninput = () => { val.innerText = slider.value; runDetection(); };
-  wrapper.appendChild(text); wrapper.appendChild(slider); wrapper.appendChild(val);
+  slider.oninput = () => { text.innerText = label + ": " + slider.value; runDetection(); };
+  wrapper.appendChild(text); wrapper.appendChild(slider);
   slidersDiv.appendChild(wrapper);
   sliders[key] = slider;
 }
 
-// Defaults you liked
+// Defaults
 createSlider("Gap Threshold", 2, 50, 50, 1, "gap");
 createSlider("Diff Threshold", 5, 100, 16, 1, "diff");
 createSlider("Column Padding", 0, 20, 3, 1, "padding");
@@ -122,23 +171,21 @@ function runDetection() {
 
   ctx.clearRect(0,0,overlay.width,overlay.height);
 
-  // ---------- DYNAMIC BACKGROUND ----------
+  // Dynamic background
   let bgR=0,bgG=0,bgB=0,bgCount=0;
   for(let y=0;y<height;y+=5){
     for(let x=0;x<width;x+=5){
       const i = (y*width+x)*4;
       const r = data[i], g = data[i+1], b = data[i+2];
       const lum = 0.299*r + 0.587*g + 0.114*b;
-      if(lum<100){
-        bgR+=r; bgG+=g; bgB+=b; bgCount++;
-      }
+      if(lum<100){ bgR+=r; bgG+=g; bgB+=b; bgCount++; }
     }
   }
   if(bgCount===0) bgCount=1;
   bgR/=bgCount; bgG/=bgCount; bgB/=bgCount;
   const background=[bgR,bgG,bgB];
 
-  // ---------- VERTICAL DETECTION ----------
+  // Vertical detection
   const rowDiff = new Array(height).fill(0);
   for(let y=0;y<height;y++){
     let sum=0;
@@ -171,16 +218,7 @@ function runDetection() {
   }
   if(inBlock && height-startY>GAP) regions.push({y:startY,height:height-startY});
 
-  // ---------- HORIZONTAL CROP ----------
-  function avgColumn(col,region){
-    let r=0,g=0,b=0;
-    for(let y=region.y;y<region.y+region.height;y++){
-      const i=(y*width+col)*4;
-      r+=data[i]; g+=data[i+1]; b+=data[i+2];
-    }
-    return [r/region.height,g/region.height,b/region.height];
-  }
-
+  // Horizontal crop
   function cropRegion(region){
     let left = 0, right = width - 1;
 
@@ -229,7 +267,7 @@ function runDetection() {
 
   currentBlocks = regions.map(r=>cropRegion(r));
 
-  // ---------- DRAW ----------
+  // Draw blocks
   ctx.clearRect(0,0,overlay.width,overlay.height);
   ctx.strokeStyle="lime"; ctx.lineWidth=2; ctx.font="16px Arial"; ctx.fillStyle="lime";
   currentBlocks.forEach((r,i)=>{
@@ -240,10 +278,9 @@ function runDetection() {
   debug.textContent = `Blocks: ${currentBlocks.length}\nBackground RGB: ${background.map(v=>Math.round(v))}\nGap: ${GAP}\nDiff Threshold: ${DIFF_THRESHOLD}\nPadding: ${PADDING}\nVertical Padding: ${V_PADDING}\nTolerance %: ${TOLERANCE*100}`;
 }
 
-// ---------- CLICK TO DOWNLOAD ----------
+// Click to download
 overlay.addEventListener("click", function(e){
   if(!currentBlocks.length) return;
-
   const rect = overlay.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
