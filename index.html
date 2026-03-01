@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Screenshot Block Detector & Downloader</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 10px;
+  }
+
+  .controls {
+    margin-top: 10px;
+  }
+
+  /* Container holds image + overlay */
+  #container {
+    position: relative;
+    display: inline-block;      /* natural size */
+    float: right;               /* move to right */
+    margin-left: 10px;
+    max-width: 100%;            /* ensures it doesn’t overflow mobile */
+  }
+
+  /* Image scales visually, but canvas coordinates stay correct */
+  #image {
+    display: block;
+    width: 100%;                /* fill container responsively */
+    height: auto;
+  }
+
+  /* Overlay stays on top */
+  #overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    cursor: pointer;
+    pointer-events: auto;
+    width: 100%;                /* match image visually */
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<h2>Screenshot Block Detector & Downloader</h2>
+
+<input type="file" id="upload" accept="image/*">
+<div class="controls" id="sliders"></div>
+
+<div id="container">
+  <img id="image">
+  <canvas id="overlay"></canvas>
+</div>
+<pre id="debug"></pre>
+
+<script>
+const image = document.getElementById("image");
+const overlay = document.getElementById("overlay");
+const ctx = overlay.getContext("2d");
+const upload = document.getElementById("upload");
+const debug = document.getElementById("debug");
+const slidersDiv = document.getElementById("sliders");
+
+let tempCanvas = document.createElement("canvas");
+let tempCtx = tempCanvas.getContext("2d");
+let sliders = {};
+let currentBlocks = [];
+
+// ---------- SLIDERS ----------
+function createSlider(label, min, max, value, step, key) {
+  const wrapper = document.createElement("div");
+  wrapper.style.marginTop = "5px";
+  const text = document.createElement("label");
+  text.innerText = label + ": ";
+  const slider = document.createElement("input");
+  slider.type = "range"; slider.min = min; slider.max = max; slider.value = value; slider.step = step;
+  const val = document.createElement("span");
+  val.innerText = value;
+  slider.oninput = () => { val.innerText = slider.value; runDetection(); };
+  wrapper.appendChild(text); wrapper.appendChild(slider); wrapper.appendChild(val);
+  slidersDiv.appendChild(wrapper);
+  sliders[key] = slider;
+}
+
+// Defaults you liked
+createSlider("Gap Threshold", 2, 50, 50, 1, "gap");
+createSlider("Diff Threshold", 5, 100, 16, 1, "diff");
+createSlider("Column Padding", 0, 20, 3, 1, "padding");
+createSlider("Vertical Padding", 0, 100, 44, 1, "vPadding"); 
+createSlider("Tolerance %", 0, 200, 20, 1, "tolerance"); 
+
+// ---------- IMAGE UPLOAD ----------
+upload.addEventListener("change", e => {
+  const reader = new FileReader();
+  reader.onload = ev => image.src = ev.target.result;
+  reader.readAsDataURL(e.target.files[0]);
+});
+
+image.onload = () => {
+  overlay.width = image.width;
+  overlay.height = image.height;
+  tempCanvas.width = image.width;
+  tempCanvas.height = image.height;
+  runDetection();
+};
+
+// ---------- DETECTION ----------
+function runDetection() {
+  if (!image.src) return;
+
+  tempCtx.drawImage(image, 0, 0);
+  const width = tempCanvas.width;
+  const height = tempCanvas.height;
+  const data = tempCtx.getImageData(0,0,width,height).data;
+
+  const GAP = parseInt(sliders.gap.value);
+  const DIFF_THRESHOLD = parseInt(sliders.diff.value);
+  const PADDING = parseInt(sliders.padding.value);
+  const V_PADDING = parseInt(sliders.vPadding.value);
+  const TOLERANCE = parseInt(sliders.tolerance.value)/100;
+
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+
+  // ---------- DYNAMIC BACKGROUND ----------
+  let bgR=0,bgG=0,bgB=0,bgCount=0;
+  for(let y=0;y<height;y+=5){
+    for(let x=0;x<width;x+=5){
+      const i = (y*width+x)*4;
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      if(lum<100){
+        bgR+=r; bgG+=g; bgB+=b; bgCount++;
+      }
+    }
+  }
+  if(bgCount===0) bgCount=1;
+  bgR/=bgCount; bgG/=bgCount; bgB/=bgCount;
+  const background=[bgR,bgG,bgB];
+
+  // ---------- VERTICAL DETECTION ----------
+  const rowDiff = new Array(height).fill(0);
+  for(let y=0;y<height;y++){
+    let sum=0;
+    for(let x=0;x<width;x++){
+      const i=(y*width+x)*4;
+      sum += Math.abs(data[i]-background[0])
+           + Math.abs(data[i+1]-background[1])
+           + Math.abs(data[i+2]-background[2]);
+    }
+    rowDiff[y] = sum/width;
+  }
+
+  for(let y=1;y<height-1;y++){
+    rowDiff[y] = (rowDiff[y-1]+rowDiff[y]+rowDiff[y+1])/3;
+  }
+
+  const regions=[];
+  let inBlock=false,startY=0,CONSEC=3;
+  for(let y=0;y<height;y++){
+    const above=rowDiff[y]>DIFF_THRESHOLD?1:0;
+    if(above){
+      if(!inBlock){
+        let count=0;
+        for(let k=y;k<y+CONSEC && k<height;k++) if(rowDiff[k]>DIFF_THRESHOLD) count++;
+        if(count===CONSEC){inBlock=true; startY=y;}
+      }
+    }else{
+      if(inBlock){if(y-startY>GAP) regions.push({y:startY,height:y-startY}); inBlock=false;}
+    }
+  }
+  if(inBlock && height-startY>GAP) regions.push({y:startY,height:height-startY});
+
+  // ---------- HORIZONTAL CROP ----------
+  function avgColumn(col,region){
+    let r=0,g=0,b=0;
+    for(let y=region.y;y<region.y+region.height;y++){
+      const i=(y*width+col)*4;
+      r+=data[i]; g+=data[i+1]; b+=data[i+2];
+    }
+    return [r/region.height,g/region.height,b/region.height];
+  }
+
+  function cropRegion(region){
+    let left = 0, right = width - 1;
+
+    // LEFT EDGE
+    for(let col=0; col<width; col++){
+        let badRows = 0;
+        for(let y=region.y; y<region.y+region.height; y++){
+            const i = (y*width+col)*4;
+            const diff = Math.abs(data[i]-background[0])
+                       + Math.abs(data[i+1]-background[1])
+                       + Math.abs(data[i+2]-background[2]);
+            if(diff > DIFF_THRESHOLD) badRows++;
+        }
+        if(badRows/region.height > TOLERANCE){
+            left = col;
+            break;
+        }
+    }
+
+    // RIGHT EDGE
+    for(let col=width-1; col>=0; col--){
+        let badRows = 0;
+        for(let y=region.y; y<region.y+region.height; y++){
+            const i = (y*width+col)*4;
+            const diff = Math.abs(data[i]-background[0])
+                       + Math.abs(data[i+1]-background[1])
+                       + Math.abs(data[i+2]-background[2]);
+            if(diff > DIFF_THRESHOLD) badRows++;
+        }
+        if(badRows/region.height > TOLERANCE){
+            right = col;
+            break;
+        }
+    }
+
+    // Apply horizontal padding
+    left = Math.max(0, left - PADDING);
+    right = Math.min(width-1, right + PADDING);
+
+    // Vertical padding only affects top
+    const top = Math.max(region.y + V_PADDING, 0);
+    const bottom = region.y + region.height;
+
+    return {x:left, y:top, width:right-left, height:bottom-top};
+}
+
+  currentBlocks = regions.map(r=>cropRegion(r));
+
+  // ---------- DRAW ----------
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  ctx.strokeStyle="lime"; ctx.lineWidth=2; ctx.font="16px Arial"; ctx.fillStyle="lime";
+  currentBlocks.forEach((r,i)=>{
+    ctx.strokeRect(r.x,r.y,r.width,r.height);
+    ctx.fillText(`Block ${i}`, r.x+5,r.y+20);
+  });
+
+  debug.textContent = `Blocks: ${currentBlocks.length}\nBackground RGB: ${background.map(v=>Math.round(v))}\nGap: ${GAP}\nDiff Threshold: ${DIFF_THRESHOLD}\nPadding: ${PADDING}\nVertical Padding: ${V_PADDING}\nTolerance %: ${TOLERANCE*100}`;
+}
+
+// ---------- CLICK TO DOWNLOAD ----------
+overlay.addEventListener("click", function(e){
+  if(!currentBlocks.length) return;
+
+  const rect = overlay.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  for(let i=0;i<currentBlocks.length;i++){
+    const r = currentBlocks[i];
+    if(x>=r.x && x<=r.x+r.width && y>=r.y && y<=r.y+r.height){
+      downloadBlock(r,i);
+      break;
+    }
+  }
+});
+
+function downloadBlock(block, index){
+  const tmpCanvas = document.createElement("canvas");
+  const tmpCtx = tmpCanvas.getContext("2d");
+  tmpCanvas.width = block.width;
+  tmpCanvas.height = block.height;
+
+  tmpCtx.drawImage(
+    image,
+    block.x, block.y, block.width, block.height,
+    0, 0, block.width, block.height
+  );
+
+  const link = document.createElement("a");
+  link.download = `block_${index}.png`;
+  link.href = tmpCanvas.toDataURL();
+  link.click();
+}
+</script>
