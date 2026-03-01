@@ -116,28 +116,51 @@ const slidersDiv = document.getElementById("sliders");
 
 let tempCanvas = document.createElement("canvas");
 let tempCtx = tempCanvas.getContext("2d");
+
 let sliders = {};
-let currentBlocks = [];
+let detectedBlocks = [];   // auto-detected
+let currentBlocks = [];    // final (auto + manual)
+
 
 // ---------- SLIDERS ----------
-function createSlider(label, min, max, value, step, key) {
+function createSlider(label, min, max, value, step, key, rerunDetection=true) {
   const wrapper = document.createElement("div");
   const text = document.createElement("label");
   text.innerText = label + ": " + value;
+
   const slider = document.createElement("input");
-  slider.type = "range"; slider.min = min; slider.max = max; slider.value = value; slider.step = step;
-  slider.oninput = () => { text.innerText = label + ": " + slider.value; runDetection(); };
-  wrapper.appendChild(text); wrapper.appendChild(slider);
+  slider.type = "range";
+  slider.min = min;
+  slider.max = max;
+  slider.value = value;
+  slider.step = step;
+
+  slider.oninput = () => {
+    text.innerText = label + ": " + slider.value;
+    if (rerunDetection) runDetection();
+    else redraw(); // manual crop does not re-detect
+  };
+
+  wrapper.appendChild(text);
+  wrapper.appendChild(slider);
   slidersDiv.appendChild(wrapper);
   sliders[key] = slider;
 }
 
-// Defaults
-createSlider("Gap Threshold", 2, 50, 50, 1, "gap");
-createSlider("Diff Threshold", 5, 100, 16, 1, "diff");
-createSlider("Column Padding", 0, 20, 3, 1, "padding");
-createSlider("Vertical Padding", 0, 100, 44, 1, "vPadding"); 
-createSlider("Tolerance %", 0, 200, 20, 1, "tolerance"); 
+
+// ---- ORIGINAL DETECTION SLIDERS (unchanged behavior)
+createSlider("Gap Threshold", 2, 50, 50, 1, "gap", true);
+createSlider("Diff Threshold", 5, 100, 16, 1, "diff", true);
+createSlider("Column Padding", 0, 20, 3, 1, "padding", true);
+createSlider("Vertical Padding", 0, 100, 44, 1, "vPadding", true);
+createSlider("Tolerance %", 0, 200, 20, 1, "tolerance", true);
+
+// ---- NEW MANUAL FINE TUNE SLIDERS (no re-detection)
+createSlider("Manual Crop Left", 0, 300, 0, 1, "mLeft", false);
+createSlider("Manual Crop Right", 0, 300, 0, 1, "mRight", false);
+createSlider("Manual Crop Top", 0, 300, 0, 1, "mTop", false);
+createSlider("Manual Crop Bottom", 0, 300, 0, 1, "mBottom", false);
+
 
 // ---------- IMAGE UPLOAD ----------
 upload.addEventListener("change", e => {
@@ -154,7 +177,8 @@ image.onload = () => {
   runDetection();
 };
 
-// ---------- DETECTION ----------
+
+// ---------- DETECTION (UNCHANGED) ----------
 function runDetection() {
   if (!image.src) return;
 
@@ -168,8 +192,6 @@ function runDetection() {
   const PADDING = parseInt(sliders.padding.value);
   const V_PADDING = parseInt(sliders.vPadding.value);
   const TOLERANCE = parseInt(sliders.tolerance.value)/100;
-
-  ctx.clearRect(0,0,overlay.width,overlay.height);
 
   // Dynamic background
   let bgR=0,bgG=0,bgB=0,bgCount=0;
@@ -185,7 +207,6 @@ function runDetection() {
   bgR/=bgCount; bgG/=bgCount; bgB/=bgCount;
   const background=[bgR,bgG,bgB];
 
-  // Vertical detection
   const rowDiff = new Array(height).fill(0);
   for(let y=0;y<height;y++){
     let sum=0;
@@ -209,16 +230,17 @@ function runDetection() {
     if(above){
       if(!inBlock){
         let count=0;
-        for(let k=y;k<y+CONSEC && k<height;k++) if(rowDiff[k]>DIFF_THRESHOLD) count++;
+        for(let k=y;k<y+CONSEC && k<height;k++)
+          if(rowDiff[k]>DIFF_THRESHOLD) count++;
         if(count===CONSEC){inBlock=true; startY=y;}
       }
     }else{
-      if(inBlock){if(y-startY>GAP) regions.push({y:startY,height:y-startY}); inBlock=false;}
+      if(inBlock){ if(y-startY>GAP) regions.push({y:startY,height:y-startY}); inBlock=false; }
     }
   }
-  if(inBlock && height-startY>GAP) regions.push({y:startY,height:height-startY});
+  if(inBlock && height-startY>GAP)
+    regions.push({y:startY,height:height-startY});
 
-  // Horizontal crop
   function cropRegion(region){
     let left = 0, right = width - 1;
 
@@ -232,14 +254,14 @@ function runDetection() {
                        + Math.abs(data[i+2]-background[2]);
             if(diff > DIFF_THRESHOLD) badRows++;
         }
-        if(badRows/region.height > TOLERANCE){
+        if(badRows / region.height > TOLERANCE){
             left = col;
             break;
         }
     }
 
     // RIGHT EDGE
-    for(let col=width-1; col>=0; col--){
+    for(let col = width-1; col >= 0; col--){
         let badRows = 0;
         for(let y=region.y; y<region.y+region.height; y++){
             const i = (y*width+col)*4;
@@ -248,7 +270,7 @@ function runDetection() {
                        + Math.abs(data[i+2]-background[2]);
             if(diff > DIFF_THRESHOLD) badRows++;
         }
-        if(badRows/region.height > TOLERANCE){
+        if(badRows / region.height > TOLERANCE){
             right = col;
             break;
         }
@@ -256,7 +278,7 @@ function runDetection() {
 
     // Apply horizontal padding
     left = Math.max(0, left - PADDING);
-    right = Math.min(width-1, right + PADDING);
+    right = Math.min(width - 1, right + PADDING);
 
     // Vertical padding only affects top
     const top = Math.max(region.y + V_PADDING, 0);
@@ -265,20 +287,55 @@ function runDetection() {
     return {x:left, y:top, width:right-left, height:bottom-top};
 }
 
-  currentBlocks = regions.map(r=>cropRegion(r));
-
-  // Draw blocks
-  ctx.clearRect(0,0,overlay.width,overlay.height);
-  ctx.strokeStyle="lime"; ctx.lineWidth=2; ctx.font="16px Arial"; ctx.fillStyle="lime";
-  currentBlocks.forEach((r,i)=>{
-    ctx.strokeRect(r.x,r.y,r.width,r.height);
-    ctx.fillText(`Block ${i}`, r.x+5,r.y+20);
-  });
-
-  debug.textContent = `Blocks: ${currentBlocks.length}\nBackground RGB: ${background.map(v=>Math.round(v))}\nGap: ${GAP}\nDiff Threshold: ${DIFF_THRESHOLD}\nPadding: ${PADDING}\nVertical Padding: ${V_PADDING}\nTolerance %: ${TOLERANCE*100}`;
+  detectedBlocks = regions.map(r=>cropRegion(r));
+  redraw();
 }
 
-// Click to download
+
+// ---------- APPLY MANUAL FINE CROP ----------
+function applyManualCrop(block){
+  const left = parseInt(sliders.mLeft.value);
+  const right = parseInt(sliders.mRight.value);
+  const top = parseInt(sliders.mTop.value);
+  const bottom = parseInt(sliders.mBottom.value);
+
+  const newWidth = block.width - left - right;
+  const newHeight = block.height - top - bottom;
+
+  if(newWidth <= 0 || newHeight <= 0) return null;
+
+  return {
+    x: block.x + left,
+    y: block.y + top,
+    width: newWidth,
+    height: newHeight
+  };
+}
+
+
+// ---------- DRAW ----------
+function redraw(){
+  ctx.clearRect(0,0,overlay.width,overlay.height);
+  ctx.strokeStyle="lime";
+  ctx.lineWidth=2;
+  ctx.font="16px Arial";
+  ctx.fillStyle="lime";
+
+  currentBlocks = [];
+
+  detectedBlocks.forEach((block,i)=>{
+    const adjusted = applyManualCrop(block);
+    if(!adjusted) return;
+
+    currentBlocks.push(adjusted);
+
+    ctx.strokeRect(adjusted.x,adjusted.y,adjusted.width,adjusted.height);
+    ctx.fillText(`Block ${i}`, adjusted.x+5, adjusted.y+20);
+  });
+}
+
+
+// ---------- CLICK TO DOWNLOAD ----------
 overlay.addEventListener("click", function(e){
   if(!currentBlocks.length) return;
   const rect = overlay.getBoundingClientRect();
@@ -293,6 +350,7 @@ overlay.addEventListener("click", function(e){
     }
   }
 });
+
 
 function downloadBlock(block, index){
   const tmpCanvas = document.createElement("canvas");
